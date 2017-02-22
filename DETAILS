@@ -1,0 +1,8 @@
+MOD_NAME=enhanced-ids-logs
+MOD_VERSION=0.0.1
+MOD_LONG_NAME="[3.1] enhanced-ids-logs v${MOD_VERSION}"
+MOD_INFO="A slightly niftier IDS log view."
+MOD_DIR=/var/smoothwall/mods/enhanced-ids-logs
+MOD_AUTHOR=dataking
+MOD_MAINTAINER=dataking
+MOD_FORUM=
