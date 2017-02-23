@@ -1,0 +1,13 @@
+table.idsEntry {
+	border-collapse: collapse;
+	border-width: 1px 2px;
+	border-style: solid; 
+	border-color: black;
+}
+tr.idsEntryRow {
+	border-collapse: collapse;
+	border-width: 0px;
+	border-style: solid;
+	margin: 0;
+	padding: 0;
+}
