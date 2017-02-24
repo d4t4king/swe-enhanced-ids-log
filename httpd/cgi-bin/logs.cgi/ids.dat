@@ -51,6 +51,21 @@ if (!($cgiparams{'MONTH'} =~ /^(0|1|2|3|4|5|6|7|8|9|10|11)$/) ||
         $cgiparams{'MONTH'} = $now[4];
 }
 
+# if SRCIP="" return all results
+if (($cgiparams{'ACTION'} eq $tr{'update'}) and ($cgiparams{'SRCIP'} eq "")) { 
+	undef $cgiparams{'SRCIP'}; 
+}
+# if DSTIP="" return all results
+if (($cgiparams{'ACTION'} eq $tr{'update'}) and ($cgiparams{'DSTIP'} eq "")) { 
+	undef $cgiparams{'DSTIP'}; 
+}
+# can't display both DST AND SRC
+if (($cgiparams{'SRCIP'}) and ($cgiparams{'DSTIP'})) {
+	$errormessage .= "Can't filter on destination and source IP at the same time.";
+	undef $cgiparams{'SRCIP'};
+	undef $cgiparams{'DSTIP'};
+}
+
 # pad 0's if needed
 my $day = $cgiparams{'DAY'};
 $day = "0$day" if ($day < 10);
@@ -199,6 +214,18 @@ print <<END;
 			</select></td>
 		<td colspan="3" style="width: auto;">&nbsp;</td>
 	</tr>
+	<tr>
+		<td style="15%;" class="base">$tr{'destination ipc'}</td>
+		<td colspan="2" style="40%;">
+			<select name="DSTIP">
+END
+;
+	@options = &make_select_options(\%dst_ips);
+	foreach (@options) { print "\t\t\t\t$_\n"; }
+print <<END;
+			</select></td>
+		<td colspan="3" style="width: auto;">&nbsp;</td>
+	</tr>
 	</table>
 </form>
 END
@@ -227,6 +254,76 @@ print "</div>\n";
 #===============================================================================
 # print some debug stuff for me
 #===============================================================================
+
+#===============================================================================
+# summery if IDS events
+#===============================================================================
+&openbox($tr{'summary'});
+
+print <<END;
+
+<script type="text/javascript">
+	function hideMe (box) {
+		var chkbox = document.getElementsByName('HIDE_SUMMARY');
+		var vis = "block";
+		for (var i=0;i<chkbox.length;i++) {
+			if(chkbox[i].checked){
+				vis = "none";
+					break;
+			}
+		}
+		document.getElementById(box).style.display = vis;
+	}
+</script>
+
+END
+
+my (%ruleids,%priorities,%classtypes);
+#print "<div>=====>>>>>$log[0]<<<<<>>>>>$start<<<<<>>>>>$viewsize<<<<<=====</div>\n";
+#print "<div>=====>>>>>$cgiparams{'MONTH'}<<<<<>>>>>$cgiparams{'DAY'}<<<<<>>>>>$now[3]<<<<<>>>>>$now[4]<<<<<=====</div>\n";
+foreach ( @log ) {
+	my ($datetime,$ruleID,$title,$priority,$classification,$ipinfo,$refs) = split(/\|/);
+	my $mo = $cgiparams{'MONTH'} + 1;
+	$mo = "0$mo" if ($mo < 10);
+	#print "<div>$datetime &mdash; $mo/$cgiparams{'DAY'}</div>\n";
+	next unless ($datetime =~ /^$mo\/$cgiparams{'DAY'}/);
+	$ruleids{"$ruleID - $title"}++;
+	$priorities{$priority}++;
+	$classtypes{$classification}++;
+}
+
+my $count = 0;
+print <<END;
+<input type="checkbox" name="HIDE_SUMMARY" value="HIDE" onclick="hideMe('summary_div')">$tr{'hide summary'}
+<div style="width: 100%; display: block;" id="summary_div">
+<table border="1" width="100%" style="border-collapse: collapse;">
+	<tr><td colspan="2"><h4 style="margin: .5em 0 0 0; padding: 0;">$tr{"num_ruleid"}</h4></td></tr>
+END
+foreach my $rid ( sort { $ruleids{$b} <=> $ruleids{$a} } keys %ruleids ) {
+	print "<tr><td class=\"base\" style=\"text-align: left; width: 75%; margin: 0; padding: 0;\">$rid</td><td>$ruleids{$rid}</td></tr>\n";
+	last if ($count >= 5);
+	$count++;
+}
+$count = 0;
+print <<END;
+	<tr><td colspan="2"><h4 style="margin: .5em 0 0 0; padding: 0;">$tr{'num_prios'}</h4></td></tr>
+END
+foreach my $pri ( sort { $priorities{$b} <=> $priorities{$a} } keys %priorities ) {
+	print "<tr><td class=\"base\" style=\"text-align: left; margin: 0; padding: 0;\">$pri</td><td>$priorities{$pri}</td></tr>\n";
+	last if ($count >= 5);
+	$count++;
+}
+$count = 0;
+print <<END;
+	<tr><td colspan="2"><h4 style="margin: .5em 0 0 0; paddoing: 0;">$tr{'num_class'}</h4></td></tr>
+END
+foreach my $class ( sort { $classtypes{$b} <=> $classtypes{$a} } keys %classtypes ) {
+	print "<tr><td class=\"base\" style=\"text-align: left; margin: 0; padding: 0;\">$class</td><td>$classtypes{$class}</td></tr>\n";
+	last if ($count >= 5);
+	$count++;
+}
+print "</table></div>\n";
+&closebox();
 
 &openbox($tr{'logc'});
  
@@ -332,11 +429,16 @@ foreach $_ (@slice) {
 	# it seems that there is some issue with inheritance with is preventing things to
 	# align properly in the actual rendering.
 	my ($datetime,$ruleID,$title,$priority,$classification,$ipinfo,$refs) = split(/\|/);
-	if (($ENV{'QUERY_STRING'}) and ($cgiparams{'ACTION'} eq $tr{'update'})) {
+	if (($cgiparams{'ACTION'} eq $tr{'update'}) and (defined($cgiparams{'SRCIP'}))) {
 		my ($src_ip,$dst_ip);
 		if ($ipinfo =~ /(.*?)\:\d+\s\-\>\s(.*?)\:\d+/) { $src_ip = $1; $dst_ip = $2; }
 		else { $errormessage .= "<font color=\"red\">Didn't match ipinfo regex</font>\n"; }
 		next unless ($src_ip eq $cgiparams{'SRCIP'});
+	} elsif (($cgiparams{'ACTION'} eq $tr{'update'}) and (defined($cgiparams{'DSTIP'}))) {
+		my ($src_ip,$dst_ip);
+		if ($ipinfo =~ /(.*?)\:\d+\s\-\>\s(.*?)\:\d+/) { $src_ip = $1; $dst_ip = $2; }
+		else { $errormessage .= "<font color=\"red\">Didn't match ipinfo regex</font>\n"; }
+		next unless ($dst_ip eq $cgiparams{'DSTIP'});
 	}
 	print <<END
 <table width='100%' border='1' style="border-collapse: collapse; border-width: 1px 2px; border-style: solid; border-color:black;" cellspacing='0' cellpadding='0'>
@@ -410,15 +512,17 @@ sub make_select_options {
 	my @options;
 	use lib "/var/smoothwall/mods/enhanced-ids-log/usr/lib/perl5/site_perl/5.14.4/x86_64-linux-thread-multi";
 	use Sort::Key::IPv4 qw( ipv4sort );
-	foreach my $ip ( ipv4sort keys %src_ips ) {
-		if (($ENV{'QUERY_STRING'}) and ($cgiparams{'ACTION'} eq $tr{'update'})) {
-			if ($ip eq $cgiparams{'SRCIP'}) {
-				push @options, "<option value=\"$ip\" selected>$ip</option>";
-			} else {
-				push @options, "<option value=\"$ip\">$ip</option>";
-			}
+#	print "<div>=================>>>> $ENV{'QUERY_STRING'} <<<<==================</div>\n";
+#	print "<div>=================>>>> $cgiparams{'ACTION'} <<<<==================</div>\n";
+#	print "<div>=================>>>> $cgi_ref->{'ACTION'} <<<<==================</div>\n";
+	push @options, "<option value=\"\">\n";
+	foreach my $ip ( ipv4sort keys %{$hash_ref} ) {
+		if (($cgiparams{'ACTION'} eq $tr{'update'}) and ($ip eq $cgiparams{'SRCIP'})) {
+			push @options, "<option value=\"$ip\" selected>$ip\n";
+		} elsif (($cgiparams{'ACTION'} eq $tr{'update'}) and ($ip eq $cgiparams{'DSTIP'})) {
+			push @options, "<option value=\"$ip\" selected>$ip\n";
 		} else {
-			push @options, "<option value=\"$ip\">$ip</option>";
+			push @options, "<option value=\"$ip\">$ip\n";
 		}
 	}
 	return @options;
