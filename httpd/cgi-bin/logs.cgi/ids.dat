@@ -296,7 +296,7 @@ my $count = 0;
 print <<END;
 <input type="checkbox" name="HIDE_SUMMARY" value="HIDE" onclick="hideMe('summary_div')">$tr{'hide summary'}
 <div style="width: 100%; display: block;" id="summary_div">
-<table border="1" width="100%" style="border-collapse: collapse;">
+<table border="0" width="100%" style="border-collapse: collapse;">
 	<tr><td colspan="2"><h4 style="margin: .5em 0 0 0; padding: 0;">$tr{"num_ruleid"}</h4></td></tr>
 END
 foreach my $rid ( sort { $ruleids{$b} <=> $ruleids{$a} } keys %ruleids ) {
