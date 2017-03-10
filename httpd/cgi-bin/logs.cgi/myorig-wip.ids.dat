@@ -1,0 +1,567 @@
+#!/usr/bin/perl
+#
+# SmoothWall CGIs
+#
+# This code is distributed under the terms of the GPL
+#
+# (c) The SmoothWall Team
+
+use strict;
+use warnings;
+
+use lib "/usr/lib/smoothwall";
+use header qw( :standard );
+
+use POSIX qw(ceil);
+
+my %cgiparams;
+my $errormessage;
+my @log;
+my $rowColor = 'none';
+
+my @shortmonths = ( 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug',
+	'Sep', 'Oct', 'Nov', 'Dec' );
+my @longmonths = ( $tr{'january'}, $tr{'february'}, $tr{'march'},
+	$tr{'april'}, $tr{'may'}, $tr{'june'}, $tr{'july'}, $tr{'august'},
+	$tr{'september'}, $tr{'october'}, $tr{'november'},
+	$tr{'december'} );
+
+my @now = localtime(time);
+
+$cgiparams{'DAY'} = $now[3]; 
+$cgiparams{'MONTH'} = $now[4];
+
+$now[4]++;
+$now[4] = "0$now[4]" if($now[4] < 10);
+&getcgihash(\%cgiparams);
+
+$now[4] = $cgiparams{'MONTH'}+1;
+$now[4] = "0$now[4]" if($now[4] < 10);
+
+my $start = -1;
+if ($ENV{'QUERY_STRING'} && $cgiparams{'ACTION'} ne $tr{'update'}) {
+	my @temp = split(',',$ ENV{'QUERY_STRING'});
+ 	$start = $temp[0];
+ 	$cgiparams{'MONTH'} = $temp[1];
+ 	$cgiparams{'DAY'} = $temp[2];  
+}
+
+# validate month and day or reset to "Today"
+if (!($cgiparams{'MONTH'} =~ /^(0|1|2|3|4|5|6|7|8|9|10|11)$/) ||
+        !($cgiparams{'DAY'} =~ /^(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31)$/)) {
+        $cgiparams{'DAY'} = $now[3];
+        $cgiparams{'MONTH'} = $now[4];
+}
+
+# can't display both DST AND SRC
+if (($cgiparams{'SRCIP'}) and ($cgiparams{'DSTIP'})) {
+	$errormessage .= "Can't filter on destination and source IP at the same time.";
+	undef $cgiparams{'SRCIP'};
+	undef $cgiparams{'DSTIP'};
+}
+
+# which field are we trying to filter on?
+my $SELECTED = '';
+if ((defined($cgiparams{'ACTION'})) and ($cgiparams{'ACTION'} eq $tr{'update'})) {
+	if (defined($cgiparams{'SRCIP'})) { $SELECTED = $cgiparams{'SRCIP'}; }
+	elsif (defined($cgiparams{'DSTIP'})) { $SELECTED = $cgiparams{'DSTIP'}; }
+	elsif (defined($cgiparams{'TYPE'})) { $SELECTED = $cgiparams{'TYPE'}; }
+	elsif (defined($cgiparams{'RULEID'})) { $SELECTED = $cgiparams{'RULEID'}; }
+}
+# pad 0's if needed
+my $day = $cgiparams{'DAY'};
+$day = "0$day" if ($day < 10);
+
+my $line = 0;
+my $lines = 0;
+my ($ruleID,$title,$classification,$priority,$date,$time,$srcip,$srcport,$destip,$destport, @refs);
+
+#my %checked;
+#$checked{'HIDE_SUMMARY'}{'on'} = '';
+#$checked{'HIDE_SUMMARY'}{'off'} = '';
+#$checked{'HIDE_SUMMARY'}{$cgiparams{'HIDE_SUMMARY'}} = 'CHECKED';
+#==============================================================================
+# set up vars to collect source and dest IPs
+#==============================================================================
+my (%src_ips,%dst_ips,%ruleids,%classtypes);
+
+# parse the log
+open(LOG, "/var/log/snort/alert");
+while(<LOG>) {
+	$line++;
+	if ($_ =~ m/^\[\*\*\]/) {
+		unless ($line == 1 || $date ne "$now[4]/$day") {
+			&append;
+			$line = 1;
+		}
+		($ruleID,$title,$classification,$priority,$date,$time,$srcip,$srcport,$destip,$destport) = ("n/a","n/a","n/a","n/a","n/a","n/a","n/a","n/a","n/a","n/a");
+		@refs = ();
+		$_ =~ m/\[\*\*\] \[(.*)\] (.*) \[\*\*\]/;
+		$ruleID = $1;
+		$title = $2;
+		#$ruleids{$ruleID}++;
+	}
+	if ($_ =~ m/Classification: (.*)\] \[Priority: (\d)\]/) {
+		$classification = $1;
+		$priority = $2;
+		$classtypes{$classification}++;
+	}
+	if ($_ =~ m/([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3}) \-\> ([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/) {
+		$srcip = $1 . "." . $2 . "." . $3 . "." . $4;
+		$destip = $5 . "." . $6 . "." . $7 . "." . $8;
+		$src_ips{$srcip}++;
+		$dst_ips{$destip}++;
+	}
+	if ($_ =~ m/([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\:([0-9]{1,6}) \-\> ([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\:([0-9]{1,6})/) {
+		$srcip = $1 . "." . $2 . "." . $3 . "." . $4;
+		$srcport = $5;
+		$destip = $6 . "." . $7 . "." . $8 . "." . $9;
+		$destport = $10;
+		$src_ips{$srcip}++;
+		$dst_ips{$destip}++;
+	}
+	if ($_  =~ m/^([0-9\/]{3,5})\-([0-9\:]{5,8})\.([0-9]{1,14})/) {
+		($date,$time) = ($1,$2);
+	}
+	if ($_ =~ m/\[Xref \=\> (.*)\]/) {
+		my $temp2 = $1;
+		$temp2 =~ s/\]\[Xref \=\> /,/g;
+		push(@refs, $temp2);
+	}
+}
+
+&append unless ($line == 1 || $date ne "$now[4]/$day");
+
+close(LOG);
+
+#==============================================================================
+# do the raw export
+#==============================================================================
+if (($cgiparams{'ACTION'}) && $cgiparams{'ACTION'} eq $tr{'export'}) {
+	print "Content-type: text/plain\n\n";
+	print "Smoothwall IDS snort log\r\n";
+	print "Date: $cgiparams{'DAY'} $longmonths[$cgiparams{'MONTH'}]\r\n"; 
+	print "\r\n";
+
+	foreach $_ (@log) {
+		my ($datetime,$ruleID,$title,$priority,$classification,$ipinfo,$refs) = split(/\|/);
+		print <<END
+Date: $datetime
+RuleID: $ruleID
+Name: $title
+Priority: $priority
+Type: $classification
+IP Info: $ipinfo
+Refs: $refs
+
+END
+;
+	}
+	exit;
+}
+#==============================================================================
+# do the raw export
+#==============================================================================
+
+&showhttpheaders();
+
+#my $extra_heads = "<link type=\"text/css\" rel=\"stylesheet\" href=\"/mods/enhanced-ids-log/html/ui/css/events.css\" media=\"screen\" charset=\"utf-8\" />\n";
+&openpage($tr{'ids log viewer'}, 1, '', 'logs');
+
+&openbigbox('100%', 'LEFT');
+
+&alertbox($errormessage);
+
+&openbox($tr{'settingsc'});
+
+print <<END
+<form method='POST' action='/mods/enhanced-ids-log/cgi-bin/logs.cgi/ids.dat'>
+	<table style='width: 100%; border: none; margin-left:auto; margin-right:auto'>
+	<tr>
+		<td style='width:15%;' class='base'>$tr{'month'}</td>
+		<td style='width:25%;'>
+			<select name='MONTH'>
+END
+;
+
+my $month;
+for ($month = 0; $month < 12; $month++) {
+	print "\t\t\t\t<option ";
+	print 'SELECTED ' if ($month == $cgiparams{'MONTH'});
+	print "VALUE='$month'>$longmonths[$month]\n";
+}
+print <<END
+			</select>
+		</td>
+		<td style='width:15%;' class='base'>$tr{'day'}</td>
+		<td style='width:25%;'>
+			<select name='DAY'>
+END
+;
+
+for ($day = 1; $day <= 31; $day++) {
+	print "\t\t\t\t<option ";
+	print 'SELECTED ' if ($day == $cgiparams{'DAY'});
+	print "VALUE='$day'>$day\n";
+}
+print <<END
+			</select>
+		</td>
+		<td style='width:10%; text-align:center;'><input type='submit' name='ACTION' value='$tr{'update'}'></td>
+		<td style='width:10%; text-align:center;'><input type='submit' name='ACTION' value='$tr{'export'}'></td>
+	</tr>
+	<tr>
+		<td style="width: 15%;" class="base">$tr{'typec'}</td>
+		<td style="width: 25%;">
+			<select name="TYPE">
+END
+;
+	my @options = &make_select_options(\%classtypes);
+	foreach (@options) { print "\t\t\t\t$_\n"; } 
+print <<END
+			</select>
+		</td>
+		<td style="width: 15%;" class="base">$tr{'ruleidc'}</td>
+		<td style="wodth: 25%;">
+			<select name="RULEID">
+END
+;
+	@options = &make_select_options(\%ruleids);
+	foreach (@options) { print "\t\t\t\t$_\n"; }
+print <<END
+			</select>
+		</td>
+	</tr>
+	<tr>
+		<td style="15%;" class="base">$tr{'source ipc'}</td>
+		<td colspan="2" style="40%;">
+			<select name="SRCIP">
+END
+;
+	@options = &make_select_options(\%src_ips);
+	foreach (@options) { print "\t\t\t\t$_\n"; }
+print <<END;
+			</select></td>
+		<td colspan="3" style="width: auto;">&nbsp;</td>
+	</tr>
+	<tr>
+		<td style="15%;" class="base">$tr{'destination ipc'}</td>
+		<td colspan="2" style="40%;">
+			<select name="DSTIP">
+END
+;
+	@options = &make_select_options(\%dst_ips);
+	foreach (@options) { print "\t\t\t\t$_\n"; }
+print <<END;
+			</select></td>
+		<td colspan="3" style="width: auto;">&nbsp;</td>
+	</tr>
+	</table>
+</form>
+END
+;
+
+&closebox();
+
+#===============================================================================
+# print some debug stuff for me
+#===============================================================================
+=begin
+&openbox('DEBUG:');
+use Data::Dumper;
+
+print "<h4>sources:</h4><div id=\"source_ips\">\n";
+print Dumper(\%src_ips);
+print "</div>\n";
+print "<hr width=\"75%\" />\n";
+print "<h3>destinations:</h3><div id=\"dest_ips\">\n";
+print Dumper(\%dst_ips);
+print "</div>\n";
+
+
+&closebox();
+=cut
+#===============================================================================
+# print some debug stuff for me
+#===============================================================================
+
+#===============================================================================
+# summary if IDS events
+#===============================================================================
+&openbox($tr{'summary'});
+
+print <<END;
+
+<script type="text/javascript">
+	function showMe (box) {
+		var chkbox = document.getElementsByName('HIDE_SUMMARY');
+		var vis = "none";
+		for (var i=0;i<chkbox.length;i++) {
+			if(chkbox[i].checked){
+				vis = "block";
+					break;
+			}
+		}
+		document.getElementById(box).style.display = vis;
+	}
+</script>
+
+END
+
+#my (%ruleids,%priorities,%classtypes);
+my (%priorities);
+#print "<div>=====>>>>>$log[0]<<<<<>>>>>$start<<<<<>>>>>$viewsize<<<<<=====</div>\n";
+#print "<div>=====>>>>>$cgiparams{'MONTH'}<<<<<>>>>>$cgiparams{'DAY'}<<<<<>>>>>$now[3]<<<<<>>>>>$now[4]<<<<<=====</div>\n";
+foreach ( @log ) {
+	my ($datetime,$ruleID,$title,$priority,$classification,$ipinfo,$refs) = split(/\|/);
+	my $mo = $cgiparams{'MONTH'} + 1;
+	$mo = "0$mo" if ($mo < 10);
+	#print "<div>$datetime &mdash; $mo/$cgiparams{'DAY'}</div>\n";
+	next unless ($datetime =~ /^$mo\/$cgiparams{'DAY'}/);
+	$ruleids{"$ruleID - $title"}++;
+	$priorities{$priority}++;
+	$classtypes{$classification}++;
+}
+
+my $count = 0;
+print <<END;
+<input type="checkbox" name="HIDE_SUMMARY" value="HIDE" onclick="showMe('summary_div')">$tr{'show summary'}
+<div style="width: 100%; display: none;" id="summary_div">
+<table border="1" width="100%" style="border-collapse: collapse;">
+	<tr><td colspan="2" style="background-color: #999;"><h4 style="margin: .5em 0 0 0; padding: 0; background-color: #999;">$tr{"num_ruleid"}</h4></td></tr>
+END
+foreach my $rid ( sort { $ruleids{$b} <=> $ruleids{$a} } keys %ruleids ) {
+	print "<tr><td class=\"base\" style=\"text-align: left; width: 75%; margin: 0; padding: 0;\">$rid</td><td>$ruleids{$rid}</td></tr>\n";
+	last if ($count >= 5);
+	$count++;
+}
+$count = 0;
+print <<END;
+	<tr style="background-color: #999;"><td colspan="2"><h4 style="margin: .5em 0 0 0; padding: 0; background-color: #999;">$tr{'num_prios'}</h4></td></tr>
+END
+foreach my $pri ( sort { $priorities{$b} <=> $priorities{$a} } keys %priorities ) {
+	print "<tr><td class=\"base\" style=\"text-align: left; margin: 0; padding: 0;\">$pri</td><td>$priorities{$pri}</td></tr>\n";
+	last if ($count >= 5);
+	$count++;
+}
+$count = 0;
+print <<END;
+	<tr style="background-color: #999;"><td colspan="2"><h4 style="margin: .5em 0 0 0; paddoing: 0; background-color: #999;">$tr{'num_class'}</h4></td></tr>
+END
+foreach my $class ( sort { $classtypes{$b} <=> $classtypes{$a} } keys %classtypes ) {
+	print "<tr><td class=\"base\" style=\"text-align: left; margin: 0; padding: 0;\">$class</td><td>$classtypes{$class}</td></tr>\n";
+	last if ($count >= 5);
+	$count++;
+}
+print "</table></div>\n";
+&closebox();
+
+&openbox($tr{'logc'});
+ 
+$start = $lines - $viewsize if ($start == -1);
+$start = $lines - $viewsize if ($start >= $lines - $viewsize);
+$start = 0 if ($start < 0);
+
+my $prev = $start - $viewsize;
+my $next = $start + $viewsize;
+
+$prev = 0 if ($prev < 0);
+$next = -1 if ($next >= $lines);
+$prev = -1 if ($start == 0);
+
+my @slice = splice(@log, $start, $viewsize);
+
+my $number_of_pages = ceil( $lines / $viewsize );
+my $page = 0;
+my $max_number_of_pages = 20;
+my $start_page = 0;
+my $end_page = $number_of_pages;
+
+my $tpage = $number_of_pages - ceil( $start / $viewsize );
+
+if ( $number_of_pages > $max_number_of_pages ) {
+	$start_page = $tpage - int( $max_number_of_pages / 2 );
+	$end_page   = $tpage + int( $max_number_of_pages / 2 );
+
+	if ( $end_page > $number_of_pages ) {
+		$start_page = $number_of_pages;
+		$end_page = $start_page;
+		$start_page -= $max_number_of_pages;
+	}
+
+	if ( $start_page < 0 ) {
+		$start_page = 0;
+		$end_page = $max_number_of_pages;
+	}
+}
+
+print <<END
+<table style='margin-left: auto; margin-right: auto;'>
+<tr>
+END
+;
+
+if ( $number_of_pages >= 2 ) {
+	if ($next != -1) {
+		$next = $lines - ((int( $lines / $viewsize ) * $viewsize)) if ($tpage == $number_of_pages);
+		print "	<td style='vertical-align: top; text-align: center;'><a href='/mods/enhanced-ids-log/cgi-bin/logs.cgi/ids.dat?$next,$cgiparams{'MONTH'},$cgiparams{'DAY'},$cgiparams{'SOURCE_IP'}'>&lt; Sm</a></td>"; }
+	else {
+		print "	<td style='vertical-align: top;text-align: center'>&lt; Sm</td>"; 
+	}
+
+	for ( my $i = ($lines-$viewsize) ; $i > (1-$viewsize) ; $i -= $viewsize ) {
+		my $page = $number_of_pages - ceil( $i / $viewsize );
+		$i = 0 if ( $i < 0);
+      
+		if ( $page >= $start_page and $page <= $end_page ) {
+			if ( $i == $start ){
+				print "	<td style='vertical-align: top;text-align: center;'><a style='color: red;' href='/mods/enhanced-ids-log/cgi-bin/logs.cgi/ids.dat?$i,$cgiparams{'MONTH'},$cgiparams{'DAY'},$cgiparams{'SOURCE_IP'}'>o<br/><span style='color: #c0c0c0;'>$page</span></a></td>"
+			}
+			else {
+				print "	<td style='vertical-align: top;text-align: center;'><a href='/mods/enhanced-ids-log/cgi-bin/logs.cgi/ids.dat?$i,$cgiparams{'MONTH'},$cgiparams{'DAY'},$cgiparams{'SOURCE_IP'}'>o<br/><span style='color: #c0c0c0;'>$page</span></a></td>"
+			}
+		}
+	}
+
+	if ($tpage != $number_of_pages) {
+		print "	<td style='vertical-align: top;text-align: center;'><a href='/mods/enhanced-ids-log/cgi-bin/logs.cgi/ids.dat?$prev,$cgiparams{'MONTH'},$cgiparams{'DAY'},$cgiparams{'SOURCE_IP'}'>th &gt;</a></td>"; 
+	}
+	else {
+		print "	<td style='vertical-align: top;text-align: center;'>th &gt;</td>"; 
+	}
+}
+
+print <<END
+	<td></td>
+</tr>
+</table>
+END
+;
+
+print <<END
+<table style='width: 100%; border: none; margin-left:auto; margin-right:auto' id='tblaaaaa'>
+<tr>
+	<td>
+END
+;
+
+my %rowColorByPri = (
+	#'1' => '#b3001b',
+	'1' => '#ff8181',
+	#'2' => '#e76403',
+	'2' => '#f7be81',
+	#'3' =>	'#ffff66',
+	'3' => '#f2f5a9',
+);
+
+foreach $_ (@slice) {
+
+	# NOTE: Doing the style this way, is, in my humble opinion, very messy.  However,
+	# it seems that there is some issue with inheritance with is preventing things to
+	# align properly in the actual rendering.
+	my ($datetime,$ruleID,$title,$priority,$classification,$ipinfo,$refs) = split(/\|/);
+	if ($cgiparams{'ACTION'} eq $tr{'update'}) {
+		if (defined($cgiparams{'SRCIP'})) {
+			my ($src_ip,$dst_ip);
+			if ($ipinfo =~ /(.*?)\:\d+\s\-\>\s(.*?)\:\d+/) { $src_ip = $1; $dst_ip = $2; }
+			else { $errormessage .= "<font color=\"red\">Didn't match ipinfo regex</font>\n"; }
+			next unless ($src_ip eq $cgiparams{'SRCIP'});
+		} elsif (defined($cgiparams{'DSTIP'})) {
+			my ($src_ip,$dst_ip);
+			if ($ipinfo =~ /(.*?)\:\d+\s\-\>\s(.*?)\:\d+/) { $src_ip = $1; $dst_ip = $2; }
+			else { $errormessage .= "<font color=\"red\">Didn't match ipinfo regex</font>\n"; }
+			next unless ($dst_ip eq $cgiparams{'DSTIP'});
+		} elsif (defined($cgiparams{'TYPE'})) {
+			next unless ($classification eq $SELECTED);
+		} elsif (defined($cgiparams{'RULEID'})) {
+			next unless ($ruleID =~ /$SELECTED/);
+		}
+	}
+	print <<END
+<table width='100%' border='1' style="border-collapse: collapse; border-width: 1px 2px; border-style: solid; border-color:black;" cellspacing='0' cellpadding='0'>
+<tr style='background-color:$rowColorByPri{$priority}; border-collapse: collapse; border: 0px solid $rowColorByPri{$priority}; margin: 0; padding: 0;'>
+	<td class='base' style='width:12%; height:1em; margin:0; padding:.1em; background-color: $rowColorByPri{$priority};'>
+		<p style='margin:.5em 0 0 0; color: #222; text-shadow: 0px 1px 3px #555;'><b>$tr{'ruleidc'}</b></p></td>
+	<td colspan='5'><p style='margin:.5em 0 0 1em'>$ruleID - $title</p></td>
+</tr>
+<tr style='background-color:$rowColorByPri{$priority}; border-collapse: collapse; border: 0px solid $rowColorByPri{$priority}; margin: 0; padding: 0;'>
+	<td class='base' style='width:12%; height:1em; margin:0; padding:.1em; background-color: $rowColorByPri{$priority};>
+		<p style='margin:0 0 0 1em; color: #222; text-shadow: 0px 1px 3px #555;'><b>$tr{'datec'}</b></p></td>
+	<td style='width:27%; height:1em; margin:0'><p style='margin:0 0 0 1em'>$datetime</p></td>
+	<td class='base' style='width:12%; height:1em; margin:0; padding:.1em; background-color: $rowColorByPri{$priority}'>
+		<p style='margin:0 0 0 1em; color: #222; text-shadow: 0px 1px 3px #555;'><b>$tr{'priorityc'}</b></p></td>
+	<td style='width:12%; height:1em; margin:0'><p style='margin:0 0 0 1em'>$priority</p></td>
+	<td class='base' style='width:12%; height:1em; margin:0; padding:.1em; background-color: $rowColorByPri{$priority}'>
+		<p style='margin:0 0 0 1em; color: #222; text-shadow: 0px 1px 3px #555;'><b>Class $tr{'typec'}</b></p></td>
+	<td style='width:25%; height:1em; margin:0'><p style='margin:0 0 0 1em'>$classification</p></td>
+</tr>
+<tr style='background-color:$rowColorByPri{$priority}; border-collapse: collapse; border: 0px solid $rowColorByPri{$priority}; margin: 0;'>
+	<td class='base' style='width:12%; height:1em; margin:0; padding:.1em; background-color: $rowColorByPri{$priority}'>
+		<p style='margin:0 0 0 1em; color: #222; text-shadow: 0px 1px 3px #555;'><b>$tr{'ipinfoc'}</b></p></td>
+	<td colspan='3'><p style='margin:0 0 0 1em'>$ipinfo</p></td>
+	<td class='base' style='width:12%; height:1em; margin:0; padding:.1em; background-color: $rowColorByPri{$priority}'>
+		<p style='margin:0 0 .5em 1em; color: #222; text-shadow: 0px 1px 3px #555;'><b>$tr{'referencesc'}</b></p></td>
+	<td style='width:20%; height:1em; margin:0 0 .5em 0'><p style='margin:0 0 .5em 1em'>
+END
+;
+	my @temp = split(/,/, $refs);
+	my $i;
+	for($i=0; $i <= $#temp; $i++) {
+		my $num = $i + 1;
+		print "<a href='$temp[$i]' onclick='window.open(this.href); return false'>$num</a> ";
+	}
+	print $tr{'none found'} if($temp[0] eq "");
+
+	print <<END
+</p></td>
+</tr>
+<!--<tr style='background-color:$rowColorByPri{$priority}'><td colspan='6'>&nbsp;</td></tr>-->
+</table>
+END
+;
+        $lines++;
+}
+
+print <<END
+</td>
+</tr>
+</table>
+END
+;
+
+&closebox();
+
+&alertbox('add','add');
+&closebigbox();
+&closepage();
+
+sub append
+{
+	$log[$lines] = "$date $time|$ruleID|$title|$priority|$classification|$srcip:$srcport -> $destip:$destport|";
+	foreach $_ (@refs) {
+		$log[$lines] = "$log[$lines]$_,";
+	}
+	$lines++;
+}
+
+sub make_select_options {
+	my $hash_ref = shift;
+	my (@sorted,@options);
+	use lib "/var/smoothwall/mods/enhanced-ids-log/usr/lib/perl5/site_perl/5.14.4/x86_64-linux-thread-multi";
+	use Sort::Key::IPv4 qw( ipv4sort );
+	push @options, "<option value=\"\">\n";
+	my @keys = keys %{$hash_ref};
+	if ($keys[0] =~ /^\d+\.\d+\.\d+\.\d+$/) {		# looks like n IP
+		@sorted = ipv4sort @keys;
+	} else {
+		@sorted = sort @keys;
+	}
+	foreach my $key ( @sorted ) {
+		if (($cgiparams{'ACTION'} eq $tr{'update'}) and ($key eq $SELECTED)) {
+			push @options, "<option selected value=\"$key\">$key";
+		} else {
+			push @options, "<option value=\"$key\">$key";
+		}
+	}
+	return @options;
+}
